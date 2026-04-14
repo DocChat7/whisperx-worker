@@ -188,15 +188,15 @@ def _to_native(val):
 
 
 def _serialize_segments(segments: list) -> list:
-    """Convert all segment values to JSON-serializable Python types."""
+    """Convert all segment values to JSON-serializable Python types.
+    Removes 'words' array to reduce payload size (can be 10x the segment data)."""
     clean = []
     for seg in segments:
         s = {}
         for k, v in seg.items():
-            if k == "words" and isinstance(v, list):
-                s[k] = [_to_native(w) for w in v]
-            else:
-                s[k] = _to_native(v)
+            if k == "words":
+                continue  # Skip word-level data (too large for RunPod response)
+            s[k] = _to_native(v)
         clean.append(s)
     return clean
 
