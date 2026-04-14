@@ -93,9 +93,12 @@ def _get_diarize_model(hf_token: str = ""):
         return _diarize_model
     token = hf_token or HF_TOKEN
     if not token:
-        raise ValueError("HF_TOKEN required for diarization")
+        print("WARNING: No HF_TOKEN — skipping diarization")
+        raise ValueError("HF_TOKEN required for diarization. Set HF_TOKEN env var on the endpoint.")
+    print(f"HF_TOKEN present: {token[:8]}...")
     from whisperx.diarize import DiarizationPipeline
-    print(f"Loading diarization... ({_vram_info()})")
+    print(f"Loading diarization model (downloading ~300MB)... ({_vram_info()})")
+    print(f"Model: pyannote/speaker-diarization-community-1")
     _diarize_model = DiarizationPipeline(token=token, device=DEVICE)
     print(f"Diarization loaded! ({_vram_info()})")
     return _diarize_model
