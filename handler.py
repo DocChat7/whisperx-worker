@@ -38,6 +38,9 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODEL_NAME = os.environ.get("WHISPERX_MODEL", "large-v3")
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
 
+# Ensure pyannote uses same cache as huggingface hub
+os.environ["PYANNOTE_CACHE"] = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface/hub"))
+
 # --- Effort → model config ---
 EFFORT_CONFIG = {
     1: {"compute_type": "int8",    "batch_size": 16, "asr_options": {"beam_size": 1, "best_of": 1}},
@@ -81,26 +84,34 @@ def _get_whisper_model(effort: int):
 # Pre-load default model
 _get_whisper_model(2)
 
-# Diarize model — lazy loaded
+# Pre-load diarize model at startup (not inside handler — avoids RunPod handler context issues)
 _diarize_model = None
+if HF_TOKEN:
+    try:
+        print(f"Pre-loading diarization model... ({_vram_info()})")
+        # Step 1: pre-download all files
+        from huggingface_hub import snapshot_download
+        snapshot_download("pyannote/speaker-diarization-community-1", token=HF_TOKEN)
+        print(f"Model files downloaded. Initializing pipeline...")
+        # Step 2: init pipeline
+        from whisperx.diarize import DiarizationPipeline
+        _diarize_model = DiarizationPipeline(token=HF_TOKEN, device=DEVICE)
+        print(f"Diarization loaded! ({_vram_info()})")
+    except Exception as e:
+        print(f"Diarization pre-load failed: {e}")
+        _diarize_model = None
+else:
+    print("No HF_TOKEN — diarization disabled")
+
+# Block ALL network calls to HuggingFace inside handler (prevents asyncio event loop blocking)
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 print(f"Ready! ({_vram_info()})")
 
 
 def _get_diarize_model(hf_token: str = ""):
-    global _diarize_model
-    if _diarize_model is not None:
-        return _diarize_model
-    token = hf_token or HF_TOKEN
-    if not token:
-        print("WARNING: No HF_TOKEN — skipping diarization")
-        raise ValueError("HF_TOKEN required for diarization. Set HF_TOKEN env var on the endpoint.")
-    print(f"HF_TOKEN present: {token[:8]}...")
-    from whisperx.diarize import DiarizationPipeline
-    print(f"Loading diarization model (downloading ~300MB)... ({_vram_info()})")
-    print(f"Model: pyannote/speaker-diarization-community-1")
-    _diarize_model = DiarizationPipeline(token=token, device=DEVICE)
-    print(f"Diarization loaded! ({_vram_info()})")
+    """Returns pre-loaded diarize model or None."""
     return _diarize_model
 
 
@@ -252,12 +263,18 @@ def handler(job):
             torch.cuda.empty_cache()
 
         # Diarize
+        diarize_success = False
         if diarize:
             runpod.serverless.progress_update(job, {"step": "Identificando falantes...", "progress": 70})
             try:
                 dm = _get_diarize_model(hf_token)
-                diarize_segments = dm(audio_path)
-                result = whisperx.assign_word_speakers(diarize_segments, result)
+                if dm is not None:
+                    diarize_segments = dm(audio_path)
+                    result = whisperx.assign_word_speakers(diarize_segments, result)
+                    diarize_success = True
+                    print("Diarize OK")
+                else:
+                    print("Diarize skipped (model not available)")
             except Exception as e:
                 print(f"Diarize failed: {e}")
 
