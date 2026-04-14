@@ -7,23 +7,20 @@ ENV HF_HOME=/root/.cache/huggingface
 
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip ffmpeg \
+    python3 python3-dev ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Pin torch+torchaudio 2.6 (compatible with pyannote.audio 3.1)
-RUN pip3 install --no-cache-dir \
-    torch==2.6.0 torchaudio==2.6.0 \
-    --index-url https://download.pytorch.org/whl/cu124
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Install whisperx + deps with compatible pyannote
-RUN pip3 install --no-cache-dir \
-    whisperx \
-    deepfilternet \
-    runpod \
-    "pyannote.audio>=3.1,<3.3"
+WORKDIR /app
 
-# Pre-download Whisper large-v3
-RUN python3 -c "\
+# Install deps from lock file (reproducible)
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+# Pre-download Whisper large-v3 model
+RUN uv run python3 -c "\
 import torch; \
 torch.serialization.add_safe_globals([ \
     __import__('omegaconf').listconfig.ListConfig, \
@@ -32,13 +29,12 @@ import whisperx; \
 whisperx.load_model('large-v3', 'cpu', compute_type='int8'); \
 print('Model cached!')"
 
-# Pre-download DeepFilterNet
-RUN python3 -c "from df.enhance import init_df; init_df(config_allow_defaults=True)" || true
+# Pre-download DeepFilterNet model
+RUN uv run python3 -c "from df.enhance import init_df; init_df(config_allow_defaults=True)" || true
 
 # Cleanup
 RUN rm -rf /root/.cache/pip /tmp/*
 
-WORKDIR /app
 COPY handler.py .
 
-CMD ["python3", "-u", "handler.py"]
+CMD ["uv", "run", "python3", "-u", "handler.py"]
