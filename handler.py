@@ -160,6 +160,36 @@ def _filter_hallucinations(segments: list) -> list:
     return filtered
 
 
+def _to_native(val):
+    """Convert numpy/torch types to native Python types."""
+    import numpy as np
+    if isinstance(val, (np.integer,)):
+        return int(val)
+    if isinstance(val, (np.floating,)):
+        return float(val)
+    if isinstance(val, np.ndarray):
+        return val.tolist()
+    if isinstance(val, dict):
+        return {k: _to_native(v) for k, v in val.items()}
+    if isinstance(val, (list, tuple)):
+        return [_to_native(v) for v in val]
+    return val
+
+
+def _serialize_segments(segments: list) -> list:
+    """Convert all segment values to JSON-serializable Python types."""
+    clean = []
+    for seg in segments:
+        s = {}
+        for k, v in seg.items():
+            if k == "words" and isinstance(v, list):
+                s[k] = [_to_native(w) for w in v]
+            else:
+                s[k] = _to_native(v)
+        clean.append(s)
+    return clean
+
+
 def handler(job):
     start_time = time.time()
     inp = job["input"]
@@ -237,19 +267,22 @@ def handler(job):
         full_text = " ".join(s.get("text", "").strip() for s in segments if s.get("text", "").strip())
         duration = audio.shape[0] / 16000
 
+        # Serialize segments to pure Python types (no numpy/torch)
+        clean_segments = _serialize_segments(segments)
+
         elapsed = time.time() - start_time
-        print(f"Done: {len(full_text)} chars, {len(segments)} segments, {elapsed:.1f}s ({_vram_info()})")
+        print(f"Done: {len(full_text)} chars, {len(clean_segments)} segments, {elapsed:.1f}s ({_vram_info()})")
 
         return {
             "text": full_text,
-            "segments": segments,
+            "segments": clean_segments,
             "language": language,
-            "duration_seconds": round(duration, 1),
+            "duration_seconds": round(float(duration), 1),
             "processing_seconds": round(elapsed, 1),
-            "effort": effort,
-            "diarize": diarize,
-            "denoise": denoise,
-            "ultra": ultra,
+            "effort": int(effort),
+            "diarize": bool(diarize),
+            "denoise": bool(denoise),
+            "ultra": bool(ultra),
         }
 
     finally:
